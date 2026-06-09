@@ -1,0 +1,12 @@
+{
+  "": {
+    "swift-dependencies": "/Users/vishalvaghasiya/Documents/Projects/SwiftPackage/RevenueCatKit/.build/arm64-apple-macosx/debug/RevenueCatKit.build/primary.swiftdeps"
+  },
+  "/Users/vishalvaghasiya/Documents/Projects/SwiftPackage/RevenueCatKit/Sources/RevenueCatKit/RevenueCatManager.swift": {
+    "dependencies": "/Users/vishalvaghasiya/Documents/Projects/SwiftPackage/RevenueCatKit/.build/arm64-apple-macosx/debug/RevenueCatKit.build/RevenueCatManager.d",
+    "object": "/Users/vishalvaghasiya/Documents/Projects/SwiftPackage/RevenueCatKit/.build/arm64-apple-macosx/debug/RevenueCatKit.build/RevenueCatManager.swift.o",
+    "swiftmodule": "/Users/vishalvaghasiya/Documents/Projects/SwiftPackage/RevenueCatKit/.build/arm64-apple-macosx/debug/RevenueCatKit.build/RevenueCatManager~partial.swiftmodule",
+    "swift-dependencies": "/Users/vishalvaghasiya/Documents/Projects/SwiftPackage/RevenueCatKit/.build/arm64-apple-macosx/debug/RevenueCatKit.build/RevenueCatManager.swiftdeps",
+    "diagnostics": "/Users/vishalvaghasiya/Documents/Projects/SwiftPackage/RevenueCatKit/.build/arm64-apple-macosx/debug/RevenueCatKit.build/RevenueCatManager.dia"
+  }
+}

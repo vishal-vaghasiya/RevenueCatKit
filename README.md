@@ -1,15 +1,13 @@
-
-
 # RevenueCatKit
 
-RevenueCatKit is a lightweight Swift library that makes it easy to integrate RevenueCat subscriptions and in-app purchases into your iOS app. With a simple interface, you can fetch offerings, handle purchases, check subscription status, restore purchases, and more – all with minimal setup.
+RevenueCatKit is a lightweight Swift library that makes it easy to integrate RevenueCat subscriptions and in-app purchases into your iOS app. With a simple interface, you can fetch offerings, handle purchases, check subscription status, restore purchases, and retrieve active plan details – all with minimal setup.
 
 ## Features
-- Fetch available offerings and products from RevenueCat
-- Purchase subscriptions or in-app products
-- Check if a user has an active subscription
-- Restore previous purchases
-- Get current plan status with a simple struct
+- Fetch available offerings and packages from RevenueCat
+- Purchase subscriptions, non-consumables, or consumable products
+- Check if a user has an active subscription (automatically filters out consumables)
+- Restore previous purchases (only returns success if subscription or non-consumable plans are active)
+- Get current plan status with a structured, detailed object (consumables excluded)
 
 ---
 
@@ -28,141 +26,130 @@ RevenueCatKit is a lightweight Swift library that makes it easy to integrate Rev
 
 ## 2. Configuration
 
-Before using RevenueCatKit, you need to configure it with your RevenueCat API key and dynamic `entitlementID` (the identifier you set up in the RevenueCat dashboard for your product).
+Before using RevenueCatKit, configure the manager with your RevenueCat API key and your configured entitlement ID. Typically, you do this early in your app's lifecycle (e.g., in `AppDelegate` or the SwiftUI App `init`).
 
 ```swift
 import RevenueCatKit
 
-// Typically, you configure this early in your app's lifecycle, e.g. in AppDelegate or at launch.
-RevenueCatKit.configure(
+// Configure in SwiftUI App init or AppDelegate didFinishLaunchingWithOptions
+RevenueCatManager.shared.configureRevenueCat(
     apiKey: "your_revenuecat_api_key",
-    entitlementID: "your_dynamic_entitlement_id" // e.g. "pro_access"
+    entitlementID: "your_entitlement_id" // e.g. "pro_access"
 )
 ```
 
-> **Tip:** You can set `entitlementID` dynamically based on your app's logic or user selection.
+---
+
+## 3. Subscription & Consumable Rules
+
+To ensure a consistent user experience, the library distinguishes between product types:
+- **Active Subscription (Subscribed):** A user is considered active/subscribed ONLY if they have purchased an active **Subscription Base Plan** (auto-renewable or non-renewable) or a **Non-Consumable** plan (e.g., a lifetime/one-time unlock).
+- **Consumable Plans:** Consumable plans (e.g., buying coins, credits, or one-off consumable packs) do **NOT** qualify as active subscriptions. Methods like `isUserSubscribed`, `restorePurchases`, and `purchase` completion will automatically filter out consumable products.
+- **Active Plan Status:** Consumable products are automatically filtered out from `getCurrentPlanStatus`.
 
 ---
 
-## 3. Usage Examples
+## 4. Usage Examples
 
 ### Fetch Available Offerings
 
-List all available products and packages from your RevenueCat dashboard.
+Retrieve the packages configured in your RevenueCat offerings:
 
 ```swift
-RevenueCatKit.shared.fetchOfferings { result in
-    switch result {
-    case .success(let offerings):
-        // offerings.current contains the current offering
-        if let packages = offerings.current?.availablePackages {
-            for package in packages {
-                print("Package: \(package.identifier), price: \(package.product.price)")
-            }
-        }
-    case .failure(let error):
-        print("Failed to fetch offerings: \(error)")
+RevenueCatManager.shared.fetchOfferings { packages in
+    for package in packages {
+        let product = package.storeProduct
+        print("Product: \(product.localizedTitle), Price: \(product.localizedPriceString)")
     }
 }
 ```
 
 ### Purchase a Package
 
-Purchase a package (e.g., monthly subscription).
+Purchase a subscription or in-app package. The completion handler returns `(isSubscribed, error)`. `isSubscribed` will be `true` if the purchase completes successfully and unlocks an active subscription base plan or non-consumable (consumables will return `false`).
 
 ```swift
-// Assume you have a Package object (e.g., from fetchOfferings)
-RevenueCatKit.shared.purchase(package) { result in
-    switch result {
-    case .success(let transaction):
-        print("Purchase successful: \(transaction.productIdentifier)")
-    case .failure(let error):
-        print("Purchase failed: \(error)")
+// Assume package is obtained from fetchOfferings
+RevenueCatManager.shared.purchase(package: package) { isSubscribed, error in
+    if let error = error {
+        print("Purchase error: \(error.localizedDescription)")
+    } else if isSubscribed {
+        print("Successfully purchased and unlocked subscription access!")
+    } else {
+        print("Purchase failed, canceled, or was a consumable.")
     }
 }
 ```
 
 ### Check Subscription Status
 
-Check if the user currently has an active subscription for your entitlement.
+Determine if the user currently has an active subscription or non-consumable unlocked. Consumables are ignored.
 
 ```swift
-RevenueCatKit.shared.isSubscribed { isActive in
-    if isActive {
-        print("User has an active subscription!")
+RevenueCatManager.shared.isUserSubscribed { isSubscribed, error in
+    if let error = error {
+        print("Check subscription error: \(error.localizedDescription)")
+    } else if isSubscribed {
+        print("User has active subscription access!")
     } else {
-        print("No active subscription.")
+        print("User does not have active subscription access.")
     }
 }
 ```
 
 ### Restore Purchases
 
-Restore previous purchases (useful when users reinstall or switch devices).
+Restore previous purchases for the configured entitlement. The completion handler returns `true` if an active subscription base plan or non-consumable is recovered.
 
 ```swift
-RevenueCatKit.shared.restorePurchases { result in
-    switch result {
-    case .success(let restored):
-        print("Restored: \(restored)")
-    case .failure(let error):
-        print("Restore failed: \(error)")
+RevenueCatManager.shared.restorePurchases { isSubscribed, error in
+    if let error = error {
+        print("Restore error: \(error.localizedDescription)")
+    } else if isSubscribed {
+        print("Subscription restored successfully!")
+    } else {
+        print("Restore completed, but no active subscription/non-consumable was found.")
     }
 }
 ```
 
 ### Get Current Plan Status
 
-Retrieve a summary of the user's current subscription plan.
+Retrieve detailed status information about all active plans. Consumable plans are excluded.
 
 ```swift
-RevenueCatKit.shared.getCurrentPlanStatus { status in
-    if status.isActive {
-        print("Active plan: \(status.productIdentifier ?? "unknown")")
-        print("Will renew: \(status.willRenew)")
-        print("Expires at: \(status.expirationDate?.description ?? "unknown")")
-    } else {
-        print("No active plan.")
+RevenueCatManager.shared.getCurrentPlanStatus { planStatuses in
+    for status in planStatuses {
+        print("--- Plan Status ---")
+        print("Product ID: \(status.productId)")
+        print("Price: \(status.productPrice)")
+        print("Duration: \(status.planDuration)")
+        print("Trial Period?: \(status.isTrial)")
+        print("Billing details: \(status.billType)")
+        if let expiry = status.expirationDate {
+            print("Expires on: \(expiry) (Days remaining: \(status.daysRemaining))")
+        }
     }
 }
 ```
 
 ---
 
-## 4. `PlanStatus` Struct Explained
+## 5. `PlanStatus` Struct Reference
 
-The `PlanStatus` struct provides a simple summary of the user's current subscription state:
+The `PlanStatus` struct contains detailed information about an active plan:
 
 ```swift
 public struct PlanStatus {
-    public let isActive: Bool              // True if the user has an active entitlement
-    public let willRenew: Bool             // True if the subscription will renew
-    public let expirationDate: Date?       // Expiration date of the current plan
-    public let productIdentifier: String?  // The product ID of the active plan
+    public let productId: String          // The product ID (e.g. "com.app.monthly")
+    public let planDuration: String       // e.g. "Monthly", "Yearly", "Daily", "One-time"
+    public let productPrice: String       // Localized price (e.g. "$4.99")
+    public let expirationDate: Date?      // Expiration date (nil for lifetime/non-consumable)
+    public let isTrial: Bool              // True if currently in a trial period
+    public let daysRemaining: Int         // Days remaining until expiration
+    public let billType: String           // e.g. "Billed Monthly", "One-time Payment"
 }
 ```
-
-- **isActive**: Whether the user has an active subscription for the configured entitlement.
-- **willRenew**: Whether the subscription is set to auto-renew.
-- **expirationDate**: When the current plan will expire (if available).
-- **productIdentifier**: The identifier of the currently active product.
-
----
-
-## 5. Notes & Best Practices
-
-- **Dynamic Entitlement**: Always ensure the `entitlementID` matches the one you configured in RevenueCat dashboard. You can set this dynamically to support different products or plans.
-- **Privacy**: RevenueCat handles purchase validation and user privacy securely. You do not need to manage receipts directly.
-- **Testing**: Use RevenueCat's sandbox environment and Apple's StoreKit testing tools to simulate purchases during development.
-- **Error Handling**: Always handle failures in your UI to provide good feedback to users (e.g., for network errors or purchase failures).
-- **Support**: For more advanced features (user IDs, promotional offers, etc.), see the [RevenueCat documentation](https://docs.revenuecat.com/).
-
----
-
-## 6. Resources
-
-- [RevenueCat Documentation](https://docs.revenuecat.com/)
-- [RevenueCatKit GitHub](https://github.com/vishalvaghasiya-ios/RevenueCatKit)
 
 ---
 

@@ -44,41 +44,52 @@ public final class RevenueCatManager {
     }
 
     // MARK: - Purchase Package
-    public func purchase(package: Package, completion: @MainActor @escaping (Bool) -> Void) {
+    public func purchase(package: Package, completion: @MainActor @escaping (Bool, Error?) -> Void) {
         let entitlementID = self.entitlementID
+        let packages = self.arrOfPackage
         Purchases.shared.purchase(package: package) { _, customerInfo, error, _ in
-            let isActive = customerInfo?.entitlements.all[entitlementID]?.isActive ?? false
-            Task { @MainActor in
-                completion(isActive)
-            }
+            RevenueCatManager.checkSubscriptionActive(
+                for: entitlementID,
+                packages: packages,
+                customerInfo: customerInfo,
+                error: error,
+                completion: completion
+            )
         }
     }
 
     // MARK: - Check Subscription
-    public func isUserSubscribed(completion: @MainActor @escaping (Bool) -> Void) {
+    public func isUserSubscribed(completion: @MainActor @escaping (Bool, Error?) -> Void) {
         let entitlementID = self.entitlementID
-        Purchases.shared.getCustomerInfo { customerInfo, _ in
-            let isActive = customerInfo?.entitlements.all[entitlementID]?.isActive ?? false
-            Task { @MainActor in
-                completion(isActive)
-            }
+        let packages = self.arrOfPackage
+        Purchases.shared.getCustomerInfo { customerInfo, error in
+            RevenueCatManager.checkSubscriptionActive(
+                for: entitlementID,
+                packages: packages,
+                customerInfo: customerInfo,
+                error: error,
+                completion: completion
+            )
         }
     }
 
     // MARK: - Restore Purchases
-    public func restorePurchases(completion: @MainActor @escaping (Bool) -> Void) {
+    public func restorePurchases(completion: @MainActor @escaping (Bool, Error?) -> Void) {
         let entitlementID = self.entitlementID
-        Purchases.shared.restorePurchases { customerInfo, _ in
-            let isActive = customerInfo?.entitlements.all[entitlementID]?.isActive ?? false
-            Task { @MainActor in
-                completion(isActive)
-            }
+        let packages = self.arrOfPackage
+        Purchases.shared.restorePurchases { customerInfo, error in
+            RevenueCatManager.checkSubscriptionActive(
+                for: entitlementID,
+                packages: packages,
+                customerInfo: customerInfo,
+                error: error,
+                completion: completion
+            )
         }
     }
 
     // MARK: - Current Plan Status
     public func getCurrentPlanStatus(completion: @MainActor @escaping ([PlanStatus]) -> Void) {
-        let entitlementID = self.entitlementID
         let packages = self.arrOfPackage
         Purchases.shared.getCustomerInfo { customerInfo, _ in
             guard let customerInfo = customerInfo else {
@@ -97,6 +108,12 @@ public final class RevenueCatManager {
                 let isTrial = entitlement.willRenew && entitlement.periodType == .intro
 
                 let matchedProduct = packages.first { $0.storeProduct.productIdentifier == productId }
+                
+                // Filter out consumable plans from current active plan status list
+                if let product = matchedProduct?.storeProduct, product.productType == .consumable {
+                    continue
+                }
+                
                 let localizedPrice = matchedProduct?.storeProduct.localizedPriceString ?? ""
                 let product = matchedProduct?.storeProduct
                 let subscriptionPeriod = product?.subscriptionPeriod?.unit
@@ -140,6 +157,66 @@ public final class RevenueCatManager {
             Task { @MainActor in
                 completion(planStatuses)
             }
+        }
+    }
+    
+    // MARK: - Helper Methods
+    private static func checkSubscriptionActive(
+        for entitlementID: String,
+        packages: [Package],
+        customerInfo: CustomerInfo?,
+        error: Error?,
+        completion: @MainActor @escaping (Bool, Error?) -> Void
+    ) {
+        if let error = error {
+            Task { @MainActor in
+                completion(false, error)
+            }
+            return
+        }
+
+        guard let entitlement = customerInfo?.entitlements.all[entitlementID], entitlement.isActive else {
+            Task { @MainActor in
+                completion(false, nil)
+            }
+            return
+        }
+        
+        let productID = entitlement.productIdentifier
+        
+        // Fast path: Check cache in packages list
+        if let matchedProduct = packages.first(where: { $0.storeProduct.productIdentifier == productID })?.storeProduct {
+            let isActive = RevenueCatManager.isAllowedProductType(matchedProduct.productType)
+            Task { @MainActor in
+                completion(isActive, nil)
+            }
+            return
+        }
+        
+        // Slow path: Fetch product from the store to check its type
+        Purchases.shared.getProducts([productID]) { products in
+            let isActive: Bool
+            if let product = products.first {
+                isActive = RevenueCatManager.isAllowedProductType(product.productType)
+            } else {
+                // Fallback: If product details cannot be fetched, we verify if there is an expirationDate.
+                // Auto-renewable subscriptions have an expiration date, whereas consumables/non-consumables do not.
+                isActive = entitlement.expirationDate != nil
+            }
+            Task { @MainActor in
+                completion(isActive, nil)
+            }
+        }
+    }
+    
+    private static func isAllowedProductType(_ type: StoreProduct.ProductType) -> Bool {
+        switch type {
+        case .autoRenewableSubscription, .nonRenewableSubscription, .nonConsumable:
+            return true
+        case .consumable:
+            return false
+        @unknown default:
+            return false
         }
     }
 }
