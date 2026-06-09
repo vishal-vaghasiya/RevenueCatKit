@@ -18,7 +18,7 @@ let package = Package(
     dependencies: [
         .package(
             url: "https://github.com/RevenueCat/purchases-ios-spm.git",
-            from: "5.40.0"
+            from: "5.78.0"
         ),
     ],
     targets: [

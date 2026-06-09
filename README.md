@@ -44,7 +44,7 @@ RevenueCatManager.shared.configureRevenueCat(
 
 To ensure a consistent user experience, the library distinguishes between product types:
 - **Active Subscription (Subscribed):** A user is considered active/subscribed ONLY if they have purchased an active **Subscription Base Plan** (auto-renewable or non-renewable) or a **Non-Consumable** plan (e.g., a lifetime/one-time unlock).
-- **Consumable Plans:** Consumable plans (e.g., buying coins, credits, or one-off consumable packs) do **NOT** qualify as active subscriptions. Methods like `isUserSubscribed`, `restorePurchases`, and `purchase` completion will automatically filter out consumable products.
+- **Consumable Plans:** Consumable plans (e.g., buying coins, credits, or one-off consumable packs) do **NOT** qualify as active subscriptions. `isUserSubscribed` and `restorePurchases` will ignore consumable products. `purchase` returns success for consumables so your app can add credits, but it does not unlock premium access or remove ads.
 - **Active Plan Status:** Consumable products are automatically filtered out from `getCurrentPlanStatus`.
 
 ---
@@ -66,17 +66,28 @@ RevenueCatManager.shared.fetchOfferings { packages in
 
 ### Purchase a Package
 
-Purchase a subscription or in-app package. The completion handler returns `(isSubscribed, error)`. `isSubscribed` will be `true` if the purchase completes successfully and unlocks an active subscription base plan or non-consumable (consumables will return `false`).
+Purchase a subscription, lifetime plan, or consumable package. The completion handler returns `(success, error)`. For subscriptions and lifetime purchases, verify premium access using `isUserSubscribed`. For consumables, success means the purchase completed and you should add credits only (do not remove ads or unlock premium).
 
 ```swift
-// Assume package is obtained from fetchOfferings
-RevenueCatManager.shared.purchase(package: package) { isSubscribed, error in
+RevenueCatManager.shared.purchase(package: package) { success, error in
     if let error = error {
         print("Purchase error: \(error.localizedDescription)")
-    } else if isSubscribed {
-        print("Successfully purchased and unlocked subscription access!")
+        return
+    }
+
+    guard success else {
+        print("Purchase failed or canceled")
+        return
+    }
+
+    if package.storeProduct.productType == .consumable {
+        print("Credit pack purchased. Add credits only.")
     } else {
-        print("Purchase failed, canceled, or was a consumable.")
+        RevenueCatManager.shared.isUserSubscribed { isSubscribed, _ in
+            if isSubscribed {
+                print("Premium activated. Remove ads.")
+            }
+        }
     }
 }
 ```
@@ -146,7 +157,7 @@ public struct PlanStatus {
     public let productPrice: String       // Localized price (e.g. "$4.99")
     public let expirationDate: Date?      // Expiration date (nil for lifetime/non-consumable)
     public let isTrial: Bool              // True if currently in a trial period
-    public let daysRemaining: Int         // Days remaining until expiration
+    public let daysRemaining: Int         // Days remaining until expiration (-1 for lifetime)
     public let billType: String           // e.g. "Billed Monthly", "One-time Payment"
 }
 ```

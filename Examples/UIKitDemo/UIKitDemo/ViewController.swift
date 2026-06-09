@@ -223,14 +223,38 @@ class ViewController: UIViewController {
             }
             
             if let firstPackage = packages.first {
-                self.log("Automatically purchasing first package: \(firstPackage.storeProduct.localizedTitle)...")
+                let product = firstPackage.storeProduct
+                
+                self.log("Automatically purchasing package: \(product.localizedTitle)...")
+                
                 RevenueCatManager.shared.purchase(package: firstPackage) { success, error in
-                    self.subStatusLabel.text = success ? "ACTIVE PRO MEMBER" : "FREE MEMBER"
-                    self.subStatusLabel.textColor = success ? .systemGreen : .systemOrange
+                    
                     if let error = error {
                         self.log("Error: \(error.localizedDescription)")
+                        return
+                    }
+                    
+                    guard success else {
+                        self.log("Failed: Purchase failed or canceled.")
+                        return
+                    }
+                    
+                    if product.productType == .consumable {
+                        // Credit pack purchase only.
+                        // Do not enable premium/remove ads.
+                        self.log("Success: Credit pack purchased. Add credits only.")
+                        
+                        self.checkSubscription()
+                        
                     } else {
-                        self.log(success ? "Success: Purchased package!" : "Failed: Purchase failed or canceled.")
+                        // Subscription / Lifetime purchase.
+                        // Verify entitlement before unlocking premium.
+                        RevenueCatManager.shared.isUserSubscribed { subscribed, error in
+                            self.subStatusLabel.text = subscribed ? "ACTIVE PRO MEMBER" : "FREE MEMBER"
+                            self.subStatusLabel.textColor = subscribed ? .systemGreen : .systemOrange
+                            
+                            self.log(subscribed ? "Success: Premium activated." : "Purchase success but no active premium entitlement.")
+                        }
                     }
                 }
             } else {

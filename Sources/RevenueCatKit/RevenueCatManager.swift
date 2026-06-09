@@ -48,11 +48,29 @@ public final class RevenueCatManager {
         let entitlementID = self.entitlementID
         let packages = self.arrOfPackage
         Purchases.shared.purchase(package: package) { _, customerInfo, error, _ in
+            
+            if let error = error {
+                Task { @MainActor in
+                    completion(false, error)
+                }
+                return
+            }
+            
+            // Consumable products are only credit purchases.
+            // They should return purchase success but should NOT activate subscription/remove ads.
+            if package.storeProduct.productType == .consumable {
+                Task { @MainActor in
+                    completion(true, nil)
+                }
+                return
+            }
+            
+            // Subscription / Lifetime premium validation
             RevenueCatManager.checkSubscriptionActive(
                 for: entitlementID,
                 packages: packages,
                 customerInfo: customerInfo,
-                error: error,
+                error: nil,
                 completion: completion
             )
         }
@@ -136,10 +154,13 @@ public final class RevenueCatManager {
                 default: billingDescription = "One-time Payment"
                 }
 
-                var daysRemaining = 0
+                let daysRemaining: Int
                 if let expiry = expirationDate {
                     let components = Calendar.current.dateComponents([.day], from: Date(), to: expiry)
                     daysRemaining = components.day ?? 0
+                } else {
+                    // Lifetime / non-expiring purchase
+                    daysRemaining = -1
                 }
 
                 let status = PlanStatus(
@@ -199,9 +220,9 @@ public final class RevenueCatManager {
             if let product = products.first {
                 isActive = RevenueCatManager.isAllowedProductType(product.productType)
             } else {
-                // Fallback: If product details cannot be fetched, we verify if there is an expirationDate.
-                // Auto-renewable subscriptions have an expiration date, whereas consumables/non-consumables do not.
-                isActive = entitlement.expirationDate != nil
+                // RevenueCat already confirmed entitlement.isActive.
+                // Trust entitlement status for subscriptions and lifetime purchases.
+                isActive = true
             }
             Task { @MainActor in
                 completion(isActive, nil)
@@ -211,10 +232,20 @@ public final class RevenueCatManager {
     
     private static func isAllowedProductType(_ type: StoreProduct.ProductType) -> Bool {
         switch type {
-        case .autoRenewableSubscription, .nonRenewableSubscription, .nonConsumable:
+        case .autoRenewableSubscription:
             return true
+            
+        case .nonRenewableSubscription:
+            return true
+            
+        case .nonConsumable:
+            // Only lifetime premium should use this product type.
+            return true
+            
         case .consumable:
+            // Credit packs should never unlock premium/remove ads.
             return false
+            
         @unknown default:
             return false
         }
