@@ -1,9 +1,16 @@
-// The Swift Programming Language
-// https://docs.swift.org/swift-book
-
-import Foundation
 import RevenueCat
+import Foundation
 
+// MARK: - Purchase Result Status
+// Used to identify purchase response state after RevenueCat transaction.
+public enum PurchaseStatus {
+    case purchased
+    case cancelled
+    case notActive
+}
+
+// MARK: - Active Plan Information Model
+// Contains current active subscription/lifetime purchase details.
 public struct PlanStatus {
     public let productId: String
     public let planDuration: String
@@ -14,240 +21,252 @@ public struct PlanStatus {
     public let billType: String
 }
 
+// MARK: - RevenueCat Subscription Manager
+// Thread-safe reusable manager for handling In-App Purchases.
+// Supports: Subscription, Lifetime Purchase, Restore and Plan Details.
+@MainActor
 public final class RevenueCatManager {
+    
+    public static let shared = RevenueCatManager()
+    public private(set) var isPremium = false
 
-    // MARK: - Singleton
-    @MainActor public static let shared = RevenueCatManager()
-    private var entitlementID = String()
+    private var entitlementID = ""
+    private var isConfigured = false
+    private var packages: [Package] = []
+
     private init() {}
-    private var arrOfPackage: [Package] = []
 
-    // MARK: - Configure RevenueCat
-    public func configureRevenueCat(userId: String? = nil, apiKey: String, entitlementID: String) {
-        #if DEBUG
-        Purchases.logLevel = .debug
-        #else
-        Purchases.logLevel = .error
-        #endif
-        Purchases.configure(withAPIKey: apiKey, appUserID: userId)
-        
+    // MARK: - Configure RevenueCat SDK
+    // Call once on app launch before using any purchase APIs.
+    public func configureRevenueCat(
+        userId: String? = nil,
+        apiKey: String,
+        entitlementID: String
+    ) {
+
+        guard !isConfigured else { return }
+
+        Purchases.configure(
+            withAPIKey: apiKey,
+            appUserID: userId
+        )
+
         self.entitlementID = entitlementID
+        self.isConfigured = true
     }
 
-    // MARK: - Fetch Offerings
-    public func fetchOfferings(completion: @escaping ([Package]) -> Void) {
-        Purchases.shared.getOfferings { offerings, _ in
-            let packages = offerings?.current?.availablePackages ?? []
-            self.arrOfPackage = packages
-            completion(packages)
+    // MARK: - Load Available Offers
+    // Fetch subscription and lifetime packages from RevenueCat Offering.
+    public func fetchOfferings(
+        completion: @escaping (Result<[Package], Error>) -> Void
+    ) {
+
+        Purchases.shared.getOfferings { offerings, error in
+
+            Task { @MainActor in
+
+                if let error {
+                    completion(.failure(error))
+                    return
+                }
+
+                let list = offerings?.current?.availablePackages ?? []
+                self.packages = list
+
+                completion(.success(list))
+            }
         }
     }
 
-    // MARK: - Purchase Package
-    public func purchase(package: Package, completion: @MainActor @escaping (Bool, Error?) -> Void) {
-        let entitlementID = self.entitlementID
-        let packages = self.arrOfPackage
-        Purchases.shared.purchase(package: package) { _, customerInfo, error, _ in
-            
-            if let error = error {
-                Task { @MainActor in
-                    completion(false, error)
+    // MARK: - Purchase Product
+    // Handles purchase flow and validates premium access after purchase.
+    public func purchase(
+        package: Package,
+        completion: @escaping (Result<PurchaseStatus, Error>) -> Void
+    ) {
+
+        Purchases.shared.purchase(package: package) {
+            _,
+            customerInfo,
+            error,
+            cancelled in
+
+            Task { @MainActor in
+
+                if let error {
+                    completion(.failure(error))
+                    return
                 }
-                return
-            }
-            
-            // Consumable products are only credit purchases.
-            // They should return purchase success but should NOT activate subscription/remove ads.
-            if package.storeProduct.productType == .consumable {
-                Task { @MainActor in
-                    completion(true, nil)
+
+                if cancelled {
+                    completion(.success(.cancelled))
+                    return
                 }
-                return
+
+                self.updatePremium(customerInfo)
+
+                completion(
+                    .success(
+                        self.isPremium ? .purchased : .notActive
+                    )
+                )
             }
-            
-            // Subscription / Lifetime premium validation
-            RevenueCatManager.checkSubscriptionActive(
-                for: entitlementID,
-                packages: packages,
-                customerInfo: customerInfo,
-                error: nil,
-                completion: completion
-            )
         }
     }
 
-    // MARK: - Check Subscription
-    public func isUserSubscribed(completion: @MainActor @escaping (Bool, Error?) -> Void) {
-        let entitlementID = self.entitlementID
-        let packages = self.arrOfPackage
-        Purchases.shared.getCustomerInfo { customerInfo, error in
-            RevenueCatManager.checkSubscriptionActive(
-                for: entitlementID,
-                packages: packages,
-                customerInfo: customerInfo,
-                error: error,
-                completion: completion
-            )
+    // MARK: - Check Active Premium Status
+    // Validate current user entitlement and update cached premium state.
+    public func isUserSubscribed(
+        completion: @escaping (Result<Bool, Error>) -> Void
+    ) {
+
+        Purchases.shared.getCustomerInfo { info, error in
+
+            Task { @MainActor in
+
+                if let error {
+                    completion(.failure(error))
+                    return
+                }
+
+                self.updatePremium(info)
+
+                completion(.success(self.isPremium))
+            }
         }
     }
 
     // MARK: - Restore Purchases
-    public func restorePurchases(completion: @MainActor @escaping (Bool, Error?) -> Void) {
-        let entitlementID = self.entitlementID
-        let packages = self.arrOfPackage
-        Purchases.shared.restorePurchases { customerInfo, error in
-            RevenueCatManager.checkSubscriptionActive(
-                for: entitlementID,
-                packages: packages,
-                customerInfo: customerInfo,
-                error: error,
-                completion: completion
-            )
+    // Restore previous App Store purchases and refresh premium status.
+    public func restorePurchases(
+        completion: @escaping (Result<Bool, Error>) -> Void
+    ) {
+
+        Purchases.shared.restorePurchases { info, error in
+
+            Task { @MainActor in
+
+                if let error {
+                    completion(.failure(error))
+                    return
+                }
+
+                self.updatePremium(info)
+
+                completion(.success(self.isPremium))
+            }
         }
     }
 
-    // MARK: - Current Plan Status
-    public func getCurrentPlanStatus(completion: @MainActor @escaping ([PlanStatus]) -> Void) {
-        let packages = self.arrOfPackage
+    // MARK: - Current Active Plan Details
+    // Returns subscription/lifetime information for UI display.
+    public func getCurrentPlanStatus(
+        completion: @escaping (PlanStatus?) -> Void
+    ) {
+
         Purchases.shared.getCustomerInfo { customerInfo, _ in
-            guard let customerInfo = customerInfo else {
-                Task { @MainActor in
-                    completion([])
-                }
-                return
-            }
 
-            let activeEntitlements = customerInfo.entitlements.active
-            var planStatuses: [PlanStatus] = []
+            Task { @MainActor in
 
-            for (_, entitlement) in activeEntitlements {
-                let productId = entitlement.productIdentifier
-                let expirationDate = entitlement.expirationDate
-                let isTrial = entitlement.willRenew && entitlement.periodType == .intro
-
-                let matchedProduct = packages.first { $0.storeProduct.productIdentifier == productId }
-                
-                // Filter out consumable plans from current active plan status list
-                if let product = matchedProduct?.storeProduct, product.productType == .consumable {
-                    continue
-                }
-                
-                let localizedPrice = matchedProduct?.storeProduct.localizedPriceString ?? ""
-                let product = matchedProduct?.storeProduct
-                let subscriptionPeriod = product?.subscriptionPeriod?.unit
-
-                let duration: String
-                switch subscriptionPeriod {
-                case .day: duration = "Daily"
-                case .week: duration = "Weekly"
-                case .month: duration = "Monthly"
-                case .year: duration = "Yearly"
-                default: duration = "One-time"
+                guard let customerInfo else {
+                    completion(nil)
+                    return
                 }
 
-                let billingDescription: String
-                switch subscriptionPeriod {
-                case .day: billingDescription = "Billed Daily"
-                case .week: billingDescription = "Billed Weekly"
-                case .month: billingDescription = "Billed Monthly"
-                case .year: billingDescription = "Billed Annually"
-                default: billingDescription = "One-time Payment"
+                // MARK: - Active Subscription Only
+                // Return only current active subscription plan.
+                // Ignore consumable and other purchases.
+                guard let productId = customerInfo.activeSubscriptions.first else {
+                    completion(nil)
+                    return
                 }
+
+                let expiry = customerInfo.expirationDate(
+                    forProductIdentifier: productId
+                )
 
                 let daysRemaining: Int
-                if let expiry = expirationDate {
-                    let components = Calendar.current.dateComponents([.day], from: Date(), to: expiry)
-                    daysRemaining = components.day ?? 0
+
+                if let expiry {
+                    daysRemaining = Calendar.current.dateComponents(
+                        [.day],
+                        from: Date(),
+                        to: expiry
+                    ).day ?? 0
                 } else {
-                    // Lifetime / non-expiring purchase
                     daysRemaining = -1
                 }
 
-                let status = PlanStatus(
+                let plan = PlanStatus(
                     productId: productId,
-                    planDuration: duration,
-                    productPrice: localizedPrice,
-                    expirationDate: expirationDate,
-                    isTrial: isTrial,
+                    planDuration: "Subscription",
+                    productPrice: "",
+                    expirationDate: expiry,
+                    isTrial: false,
                     daysRemaining: daysRemaining,
-                    billType: billingDescription
+                    billType: "Recurring"
                 )
-                planStatuses.append(status)
-            }
 
-            Task { @MainActor in
-                completion(planStatuses)
+                completion(plan)
             }
         }
     }
-    
-    // MARK: - Helper Methods
-    private static func checkSubscriptionActive(
-        for entitlementID: String,
-        packages: [Package],
-        customerInfo: CustomerInfo?,
-        error: Error?,
-        completion: @MainActor @escaping (Bool, Error?) -> Void
+
+    // MARK: - Premium Validation Helper
+    // Only Auto Renewable Subscription and Non-Consumable Lifetime unlock premium.
+    // Consumable and Non-Renewing one-time plans are ignored.
+    private func updatePremium(
+        _ customerInfo: CustomerInfo?
     ) {
-        if let error = error {
-            Task { @MainActor in
-                completion(false, error)
-            }
+
+        guard !entitlementID.isEmpty,
+              let customerInfo else {
+            isPremium = false
             return
         }
 
-        guard let entitlement = customerInfo?.entitlements.all[entitlementID], entitlement.isActive else {
-            Task { @MainActor in
-                completion(false, nil)
-            }
+        // MARK: - Check Active Subscription First
+        // RevenueCat entitlement can point to consumable/non-consumable product.
+        // So validate activeSubscriptions separately for subscription plans.
+        if !customerInfo.activeSubscriptions.isEmpty {
+            isPremium = true
             return
         }
-        
-        let productID = entitlement.productIdentifier
-        
-        // Fast path: Check cache in packages list
-        if let matchedProduct = packages.first(where: { $0.storeProduct.productIdentifier == productID })?.storeProduct {
-            let isActive = RevenueCatManager.isAllowedProductType(matchedProduct.productType)
-            Task { @MainActor in
-                completion(isActive, nil)
-            }
+
+        // MARK: - Check Lifetime Purchase Only
+        guard
+            let entitlement = customerInfo.entitlements.all[entitlementID],
+            entitlement.isActive
+        else {
+            isPremium = false
             return
         }
-        
-        // Slow path: Fetch product from the store to check its type
-        Purchases.shared.getProducts([productID]) { products in
-            let isActive: Bool
-            if let product = products.first {
-                isActive = RevenueCatManager.isAllowedProductType(product.productType)
-            } else {
-                // RevenueCat already confirmed entitlement.isActive.
-                // Trust entitlement status for subscriptions and lifetime purchases.
-                isActive = true
-            }
-            Task { @MainActor in
-                completion(isActive, nil)
-            }
+
+        let productId = entitlement.productIdentifier
+
+        guard let product = packages.first(where: {
+            $0.storeProduct.productIdentifier == productId
+        })?.storeProduct else {
+            isPremium = false
+            return
         }
-    }
-    
-    private static func isAllowedProductType(_ type: StoreProduct.ProductType) -> Bool {
-        switch type {
-        case .autoRenewableSubscription:
-            return true
-            
-        case .nonRenewableSubscription:
-            return true
-            
+
+        switch product.productType {
         case .nonConsumable:
-            // Only lifetime premium should use this product type.
-            return true
-            
-        case .consumable:
-            // Credit packs should never unlock premium/remove ads.
-            return false
-            
+            // Lifetime premium purchase
+            isPremium = true
+
+        case .autoRenewableSubscription:
+            // Extra fallback check
+            isPremium = true
+
+        case .consumable,
+             .nonRenewableSubscription:
+            // Consumable credits / one time plans ignored
+            isPremium = false
+
         @unknown default:
-            return false
+            isPremium = false
         }
     }
 }

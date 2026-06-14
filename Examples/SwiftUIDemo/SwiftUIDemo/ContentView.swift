@@ -2,13 +2,11 @@
 //  ContentView.swift
 //  SwiftUIDemo
 //
-//  Created by Nexios Technologies on 18/11/25.
 //
 
 import SwiftUI
 import RevenueCatKit
 import RevenueCat
-
 struct ContentView: View {
     @State private var isSubscribed = false
     @State private var isLoading = false
@@ -51,7 +49,6 @@ struct ContentView: View {
                                 Image(systemName: "checkmark.seal.fill")
                                 Text("Check Status")
                             }
-                            .fontWeight(.medium)
                             .foregroundColor(.white)
                             .frame(maxWidth: .infinity)
                             .padding()
@@ -64,7 +61,6 @@ struct ContentView: View {
                                 Image(systemName: "arrow.clockwise")
                                 Text("Restore")
                             }
-                            .fontWeight(.medium)
                             .foregroundColor(.blue)
                             .frame(maxWidth: .infinity)
                             .padding()
@@ -197,77 +193,126 @@ struct ContentView: View {
             }
             .navigationTitle("RevenueCatKit Demo")
             .background(Color(.systemGroupedBackground))
-            .onAppear {
+            .task {
                 checkSubscription()
                 fetchOfferings()
+                loadPlanStatus()
             }
         }
     }
 
     // MARK: - Actions
-    
+
     private func checkSubscription() {
         statusMessage = "Checking subscription status..."
-        RevenueCatManager.shared.isUserSubscribed { subscribed, error in
-            self.isSubscribed = subscribed
-            if let error = error {
-                self.statusMessage = "Check subscription error: \(error.localizedDescription)"
-            } else {
+
+        RevenueCatManager.shared.isUserSubscribed { result in
+            switch result {
+            case .success(let subscribed):
+                self.isSubscribed = subscribed
                 self.statusMessage = subscribed ? "User is subscribed!" : "User is not subscribed."
-            }
-            
-            // If subscribed, also load active plan details
-            if subscribed {
-                self.loadPlanStatus()
-            } else {
-                self.planStatuses = []
+
+                if subscribed {
+                    self.loadPlanStatus()
+                } else {
+                    self.planStatuses = []
+                }
+
+            case .failure(let error):
+                self.statusMessage = "Check subscription error: \(error.localizedDescription)"
             }
         }
     }
-    
+
     private func fetchOfferings() {
         isLoading = true
         statusMessage = "Fetching offerings..."
-        RevenueCatManager.shared.fetchOfferings { fetchedPackages in
-            self.packages = fetchedPackages
+
+        RevenueCatManager.shared.fetchOfferings { result in
+
             self.isLoading = false
-            self.statusMessage = "Offerings fetched successfully: \(fetchedPackages.count) packages found."
+
+            switch result {
+            case .success(let packages):
+                self.packages = packages
+                self.statusMessage = "Loaded \(packages.count) packages"
+
+            case .failure(let error):
+                self.statusMessage = "Offer loading failed: \(error.localizedDescription)"
+            }
         }
     }
-    
+
     private func purchase(_ package: Package) {
-        statusMessage = "Starting purchase for \(package.storeProduct.localizedTitle)..."
-        RevenueCatManager.shared.purchase(package: package) { success, error in
-            self.isSubscribed = success
-            if let error = error {
+        statusMessage = "Starting purchase..."
+
+        RevenueCatManager.shared.purchase(package: package) { result in
+
+            switch result {
+            case .success(let status):
+
+                switch status {
+                case .purchased:
+                    self.isSubscribed = true
+                    self.statusMessage = "Purchase successful!"
+                    self.loadPlanStatus()
+                    self.fetchOfferings()
+
+                case .cancelled:
+                    self.checkSubscription()
+                    self.statusMessage = "Purchase cancelled"
+
+                case .notActive:
+                    self.isSubscribed = false
+                    self.planStatuses = []
+                    self.statusMessage = "Purchase completed but subscription inactive"
+                }
+
+            case .failure(let error):
                 self.statusMessage = "Purchase failed: \(error.localizedDescription)"
-            } else {
-                self.statusMessage = success ? "Purchase successful!" : "Purchase failed or canceled."
-            }
-            if success {
-                self.loadPlanStatus()
             }
         }
     }
-    
+
     private func restorePurchases() {
         statusMessage = "Restoring purchases..."
-        RevenueCatManager.shared.restorePurchases { success, error in
-            self.isSubscribed = success
-            if let error = error {
+
+        RevenueCatManager.shared.restorePurchases { result in
+
+            switch result {
+            case .success(let active):
+                self.isSubscribed = active
+
+                if active {
+                    self.statusMessage = "Restore successful!"
+                    self.loadPlanStatus()
+                } else {
+                    self.statusMessage = "No active subscription found"
+                    self.planStatuses = []
+                }
+
+            case .failure(let error):
                 self.statusMessage = "Restore failed: \(error.localizedDescription)"
-            } else {
-                self.statusMessage = success ? "Purchases restored successfully!" : "Restore completed, but no active subscriptions found."
-            }
-            if success {
-                self.loadPlanStatus()
             }
         }
     }
-    
+
     private func loadPlanStatus() {
-        RevenueCatManager.shared.getCurrentPlanStatus { statuses in
-            self.planStatuses = statuses
+        statusMessage = "Loading active plan..."
+
+        RevenueCatManager.shared.getCurrentPlanStatus { plan in
+            DispatchQueue.main.async {
+
+                if let plan {
+                    self.planStatuses = [plan]
+                    self.isSubscribed = true
+                    self.statusMessage = "Active plan loaded successfully"
+                } else {
+                    self.planStatuses = []
+                    self.isSubscribed = false
+                    self.statusMessage = "No active plan found"
+                }
+            }
         }
     }
 }
